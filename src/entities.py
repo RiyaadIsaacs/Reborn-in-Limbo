@@ -46,6 +46,7 @@ class Enemy:
     hp: int = 2
     speed: float = 25.0
     is_gatekeeper: bool = False
+    room_idx: int = -1
 
     def rect(self) -> pg.Rect:
         return pg.Rect(int(self.pos.x - self.radius), int(self.pos.y - self.radius), self.radius * 2, self.radius * 2)

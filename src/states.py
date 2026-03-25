@@ -134,6 +134,11 @@ class LimboRunState:
                         xx = x0 + dx
                         if 0 <= xx < self._grid_w and 0 <= yy < self._grid_h:
                             self._tiles[yy][xx] = 1
+                            # Seal corridor edges: surround new floor with walls (only if empty).
+                            for ny in (yy - 1, yy, yy + 1):
+                                for nx in (xx - 1, xx, xx + 1):
+                                    if 0 <= nx < self._grid_w and 0 <= ny < self._grid_h and self._tiles[ny][nx] == 0:
+                                        self._tiles[ny][nx] = 2
             elif y0 == y1:
                 x_start, x_end = (x0, x1) if x0 <= x1 else (x1, x0)
                 for xx in range(x_start, x_end + 1):
@@ -141,10 +146,14 @@ class LimboRunState:
                         yy = y0 + dy
                         if 0 <= xx < self._grid_w and 0 <= yy < self._grid_h:
                             self._tiles[yy][xx] = 1
+                            for ny in (yy - 1, yy, yy + 1):
+                                for nx in (xx - 1, xx, xx + 1):
+                                    if 0 <= nx < self._grid_w and 0 <= ny < self._grid_h and self._tiles[ny][nx] == 0:
+                                        self._tiles[ny][nx] = 2
 
     def _spawn_room_enemies(self) -> None:
         # Spawn enemies based on room index; later rooms have more enemies.
-        for room in self.dungeon.rooms:
+        for ridx, room in enumerate(self.dungeon.rooms):
             r = room.rect
             inner_x0 = r.x + 1
             inner_y0 = r.y + 1
@@ -155,7 +164,7 @@ class LimboRunState:
             for _ in range(room.enemy_count):
                 gx = self.s.rng.randint(inner_x0, inner_x1)
                 gy = self.s.rng.randint(inner_y0, inner_y1)
-                self.enemies.append(Enemy(pos=pg.Vector2(gx * self._cell, gy * self._cell), hp=2, speed=22.0))
+                self.enemies.append(Enemy(pos=pg.Vector2(gx * self._cell, gy * self._cell), hp=2, speed=22.0, room_idx=ridx))
 
     def _spawn_gatekeeper(self) -> None:
         # Spawn in the last room center.
@@ -164,8 +173,22 @@ class LimboRunState:
             pos = pg.Vector2(cx * self._cell, cy * self._cell)
         else:
             pos = pg.Vector2(self._world_w / 2, self._world_h / 2)
-        self.enemies.append(Enemy(pos=pos, hp=6, speed=18.0, is_gatekeeper=True, radius=8))
+        self.enemies.append(Enemy(pos=pos, hp=6, speed=18.0, is_gatekeeper=True, radius=8, room_idx=max(0, len(self.dungeon.rooms) - 1)))
         self._gatekeeper_spawned = True
+
+    def _room_index_at_grid(self, gx: int, gy: int) -> int:
+        # Returns room index if inside its interior (not walls), else -1.
+        for ridx, room in enumerate(self.dungeon.rooms):
+            r = room.rect
+            if (r.x + 1) <= gx <= (r.x + r.w - 2) and (r.y + 1) <= gy <= (r.y + r.h - 2):
+                return ridx
+        return -1
+
+    def _is_walkable(self, gx: int, gy: int) -> bool:
+        # Only floor is walkable. Empty and walls are solid.
+        if gx < 0 or gy < 0 or gx >= self._grid_w or gy >= self._grid_h:
+            return False
+        return self._tiles[gy][gx] == 1
 
     def update(self, dt: float) -> GameState | None:
         # Movement
@@ -197,14 +220,32 @@ class LimboRunState:
         self.player.update(dt)
         # Bound to world
         keep_in_bounds(self.player.pos, self._world_w, self._world_h)
-        # Prevent walking into walls: if player's center is in a wall tile, push back.
+        # Prevent walking into non-walkable tiles.
         gx = int(self.player.pos.x) // self._cell
         gy = int(self.player.pos.y) // self._cell
-        if 0 <= gx < self._grid_w and 0 <= gy < self._grid_h and self._tiles[gy][gx] == 2:
+        if not self._is_walkable(gx, gy):
             self.player.pos = old_pos
 
+        # Enemy activation: only chase when player is inside enemy's room.
+        player_room = self._room_index_at_grid(gx, gy)
         for en in self.enemies:
-            en.update(dt, self.player.pos)
+            if en.room_idx != player_room:
+                continue
+            d = self.player.pos - en.pos
+            if d.length_squared() > 0.001:
+                d = d.normalize()
+            step = d * en.speed * dt
+            # Axis-separated collision against dungeon tiles
+            newx = pg.Vector2(en.pos.x + step.x, en.pos.y)
+            gx2 = int(newx.x) // self._cell
+            gy2 = int(newx.y) // self._cell
+            if self._is_walkable(gx2, gy2):
+                en.pos.x = newx.x
+            newy = pg.Vector2(en.pos.x, en.pos.y + step.y)
+            gx3 = int(newy.x) // self._cell
+            gy3 = int(newy.y) // self._cell
+            if self._is_walkable(gx3, gy3):
+                en.pos.y = newy.y
         self.enemies = [e for e in self.enemies if e.hp > 0]
 
         # Contact damage
