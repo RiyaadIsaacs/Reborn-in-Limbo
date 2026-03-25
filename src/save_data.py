@@ -9,7 +9,9 @@ from .util import get_save_path, load_json, save_json
 
 @dataclass
 class SaveData:
-    karma: int = 0
+    # Meta-currencies: separated to support "good vs bad" effects.
+    good_karma: int = 0
+    bad_karma: int = 0
     # Permanent upgrades (simple numbers for MVP)
     max_hp_up: int = 0
     dmg_up: int = 0
@@ -18,8 +20,11 @@ class SaveData:
     def load(path: Path | None = None) -> "SaveData":
         path = path or get_save_path()
         raw: Any = load_json(path, default={})
+        # Backward compat: if older saves used a single `karma`, treat it as good karma.
+        legacy_karma = int(raw.get("karma", 0))
         return SaveData(
-            karma=int(raw.get("karma", 0)),
+            good_karma=int(raw.get("good_karma", legacy_karma)),
+            bad_karma=int(raw.get("bad_karma", 0)),
             max_hp_up=int(raw.get("max_hp_up", 0)),
             dmg_up=int(raw.get("dmg_up", 0)),
         )

@@ -55,7 +55,8 @@ class LimboRunState:
         dmg = 1 + self.s.save.dmg_up
         self.player = Player(pos=pg.Vector2(VIRTUAL_W / 2, VIRTUAL_H / 2), vel=pg.Vector2(0, 0), hp=max_hp, stats=Stats(max_hp=max_hp, dmg=dmg, speed=60.0))
         self.enemies: list[Enemy] = []
-        self.karma_run: int = 0
+        self.karma_good_run: int = 0
+        self.karma_bad_run: int = 0
         self._spawn_timer = 0.0
         self._fragments_seen = 0
         self._next_fragment_at = 4.0
@@ -82,6 +83,13 @@ class LimboRunState:
         self._tiles: list[list[int]] = [[0 for _ in range(self._grid_w)] for _ in range(self._grid_h)]
         self._build_dungeon_tiles()
         self._spawn_room_enemies()
+        self._spawn_room_memory_pickups()
+
+        # Special room circles
+        self._room_special: dict[int, str] = {}  # room_idx -> "purify" | "corrupt"
+        self._circle_used: set[int] = set()
+        self._circle_fx: dict[int, float] = {}  # room_idx -> seconds remaining
+        self._assign_special_rooms()
 
         # Start player in room 1 center (or fallback).
         try:
@@ -166,6 +174,35 @@ class LimboRunState:
                 gy = self.s.rng.randint(inner_y0, inner_y1)
                 self.enemies.append(Enemy(pos=pg.Vector2(gx * self._cell, gy * self._cell), hp=2, speed=22.0, room_idx=ridx))
 
+    def _spawn_room_memory_pickups(self) -> None:
+        # Memory pickups: add karma when collected (good/bad split based on pickup type).
+        self.memory_pickups: list[tuple[pg.Vector2, int, int]] = []
+        # tuple: (pos, room_idx, karma_sign) where karma_sign is +1 (good) or -1 (bad)
+        for ridx, room in enumerate(self.dungeon.rooms):
+            r = room.rect
+            inner_x0 = r.x + 1
+            inner_y0 = r.y + 1
+            inner_x1 = r.x + r.w - 2
+            inner_y1 = r.y + r.h - 2
+            if inner_x1 <= inner_x0 or inner_y1 <= inner_y0:
+                continue
+            for _ in range(room.memory_count):
+                gx = self.s.rng.randint(inner_x0, inner_x1)
+                gy = self.s.rng.randint(inner_y0, inner_y1)
+                sign = 1 if self.s.rng.random() < 0.7 else -1
+                self.memory_pickups.append((pg.Vector2(gx * self._cell, gy * self._cell), ridx, sign))
+
+    def _assign_special_rooms(self) -> None:
+        # Choose up to 2 rooms as special (excluding start room).
+        candidate = list(range(len(self.dungeon.rooms)))
+        if 0 in candidate:
+            candidate.remove(0)
+        self.s.rng.shuffle(candidate)
+        if candidate:
+            self._room_special[candidate[0]] = "purify"
+        if len(candidate) > 1:
+            self._room_special[candidate[1]] = "corrupt"
+
     def _spawn_gatekeeper(self) -> None:
         # Spawn in the last room center.
         if self.dungeon.rooms:
@@ -248,6 +285,36 @@ class LimboRunState:
                 en.pos.y = newy.y
         self.enemies = [e for e in self.enemies if e.hp > 0]
 
+        # Collect memory pickups (karma gain)
+        new_pickups: list[tuple[pg.Vector2, int, int]] = []
+        for ppos, ridx, sign in self.memory_pickups:
+            if (ppos - self.player.pos).length_squared() <= (self.player.radius + 4) ** 2:
+                if sign > 0:
+                    self.karma_good_run += 1
+                else:
+                    self.karma_bad_run += 1
+            else:
+                new_pickups.append((ppos, ridx, sign))
+        self.memory_pickups = new_pickups
+
+        # Special circle interaction (E)
+        if player_room in self._room_special and player_room not in self._circle_used:
+            if self.s.inp.pressed(pg.K_e):
+                kind = self._room_special[player_room]
+                if kind == "purify":
+                    self.s.save.good_karma = max(0, self.s.save.good_karma - 10)
+                else:
+                    self.s.save.bad_karma = max(0, self.s.save.bad_karma - 10)
+                self.s.save.save()
+                self._circle_used.add(player_room)
+                self._circle_fx[player_room] = 0.7
+
+        # FX timers
+        for k in list(self._circle_fx.keys()):
+            self._circle_fx[k] -= dt
+            if self._circle_fx[k] <= 0:
+                del self._circle_fx[k]
+
         # Contact damage
         if self.player.invuln_ms == 0:
             for en in self.enemies:
@@ -259,9 +326,8 @@ class LimboRunState:
         # Death -> hub (permadeath)
         if self.player.hp <= 0:
             # Add run karma into meta currency and save.
-            self.s.save.karma += self.karma_run
-            if self.s.save.karma < 0:
-                self.s.save.karma = 0
+            self.s.save.good_karma += self.karma_good_run
+            self.s.save.bad_karma += self.karma_bad_run
             self.s.save.save()
             return KarmaHubState(self.s)
 
@@ -286,8 +352,9 @@ class LimboRunState:
         # Victory: gatekeeper defeated and was spawned.
         if self._gatekeeper_spawned and len(self.enemies) == 0:
             # Reward some karma for finishing.
-            self.karma_run += 3
-            self.s.save.karma += self.karma_run
+            self.karma_good_run += 3
+            self.s.save.good_karma += self.karma_good_run
+            self.s.save.bad_karma += self.karma_bad_run
             self.s.save.save()
             return VictoryState(self.s)
 
@@ -338,10 +405,71 @@ class LimboRunState:
             ecol = (140, 80, 200) if en.is_gatekeeper else (200, 110, 160)
             pg.draw.circle(surf, ecol, (ex, ey), en.radius)
 
+        # Draw memory pickups
+        for ppos, ridx, sign in getattr(self, "memory_pickups", []):
+            sx = int(ppos.x - self._cam.x)
+            sy = int(ppos.y - self._cam.y)
+            if sx < -10 or sy < -10 or sx > VIRTUAL_W + 10 or sy > VIRTUAL_H + 10:
+                continue
+            col = (250, 210, 90) if sign > 0 else (110, 150, 240)
+            pg.draw.rect(surf, col, pg.Rect(sx - 2, sy - 2, 4, 4))
+
+        # Draw special room circles
+        player_gx = int(self.player.pos.x) // self._cell
+        player_gy = int(self.player.pos.y) // self._cell
+        player_room = self._room_index_at_grid(player_gx, player_gy)
+        for ridx, kind in self._room_special.items():
+            if ridx in self._circle_used:
+                continue
+            cx, cy = self.dungeon.rooms[ridx].rect.center()
+            wx = cx * self._cell
+            wy = cy * self._cell
+            sx = int(wx - self._cam.x)
+            sy = int(wy - self._cam.y)
+            if sx < -40 or sy < -40 or sx > VIRTUAL_W + 40 or sy > VIRTUAL_H + 40:
+                continue
+
+            if kind == "purify":
+                core = (255, 220, 110)
+                glow = (255, 220, 110, 90)
+                hover_text = "Hover_to_Purify (E)"
+            else:
+                core = (220, 80, 80)
+                glow = (220, 80, 80, 90)
+                hover_text = "Hover_to_Corrupt (E)"
+
+            # Glow
+            gsurf = pg.Surface((80, 80), pg.SRCALPHA)
+            pg.draw.circle(gsurf, glow, (40, 40), 18)
+            pg.draw.circle(gsurf, (glow[0], glow[1], glow[2], 40), (40, 40), 28)
+            surf.blit(gsurf, (sx - 40, sy - 40))
+
+            # Core ring
+            pg.draw.circle(surf, core, (sx, sy), 14, width=2)
+            pg.draw.circle(surf, core, (sx, sy), 8, width=1)
+
+            # Hover UI only when player is in that room
+            if player_room == ridx:
+                draw_text(surf, self.s.font, hover_text, (sx - 40, sy - 28), (235, 235, 245))
+
+        # Circle FX burst
+        for ridx, t in self._circle_fx.items():
+            cx, cy = self.dungeon.rooms[ridx].rect.center()
+            wx = cx * self._cell
+            wy = cy * self._cell
+            sx = int(wx - self._cam.x)
+            sy = int(wy - self._cam.y)
+            p = max(0.0, min(1.0, 1.0 - t / 0.7))
+            r = int(10 + p * 22)
+            alpha = int(160 * (1.0 - p))
+            fx = pg.Surface((r * 2 + 2, r * 2 + 2), pg.SRCALPHA)
+            pg.draw.circle(fx, (255, 220, 140, alpha), (r + 1, r + 1), r, width=2)
+            surf.blit(fx, (sx - r - 1, sy - r - 1))
+
         # HUD
         draw_text(surf, self.s.font, f"HP: {self.player.hp}/{self.player.stats.max_hp if self.player.stats else self.player.hp}", (6, 6), COL_TEXT)
-        karma_col = COL_KARMA_POS if self.karma_run >= 0 else COL_KARMA_NEG
-        draw_text(surf, self.s.font, f"Karma(run): {self.karma_run}", (6, 22), karma_col)
+        draw_text(surf, self.s.font, f"Good(run): {self.karma_good_run}  Bad(run): {self.karma_bad_run}", (6, 22), (210, 210, 225))
+        draw_text(surf, self.s.font, f"Good(meta): {self.s.save.good_karma}  Bad(meta): {self.s.save.bad_karma}", (6, 36), (210, 210, 225))
         draw_text(surf, self.s.font, "Move: WASD/Arrows  Attack: Space", (6, VIRTUAL_H - 14), (170, 170, 190))
 
 
@@ -373,7 +501,10 @@ class MemoryOverlayState:
 
         if self.s.inp.pressed(pg.K_RETURN) or self.s.inp.pressed(pg.K_SPACE):
             choice = self.fragment.choices[self.choice_idx]
-            self.parent.karma_run += choice.karma_delta
+            if choice.karma_delta >= 0:
+                self.parent.karma_good_run += choice.karma_delta
+            else:
+                self.parent.karma_bad_run += abs(choice.karma_delta)
             # Resume run; schedule next fragment later.
             self.parent._next_fragment_at = 6.0
             return self.parent
@@ -438,13 +569,24 @@ class KarmaHubState:
 
         if self.s.inp.pressed(pg.K_RETURN) or self.s.inp.pressed(pg.K_SPACE):
             if self.choice_idx == 0:
-                if self.s.save.karma >= 5:
-                    self.s.save.karma -= 5
+                if self.s.save.good_karma + self.s.save.bad_karma >= 5:
+                    # Spend from good first.
+                    spend = 5
+                    take = min(self.s.save.good_karma, spend)
+                    self.s.save.good_karma -= take
+                    spend -= take
+                    if spend > 0:
+                        self.s.save.bad_karma = max(0, self.s.save.bad_karma - spend)
                     self.s.save.max_hp_up += 1
                     self.s.save.save()
             elif self.choice_idx == 1:
-                if self.s.save.karma >= 5:
-                    self.s.save.karma -= 5
+                if self.s.save.good_karma + self.s.save.bad_karma >= 5:
+                    spend = 5
+                    take = min(self.s.save.good_karma, spend)
+                    self.s.save.good_karma -= take
+                    spend -= take
+                    if spend > 0:
+                        self.s.save.bad_karma = max(0, self.s.save.bad_karma - spend)
                     self.s.save.dmg_up += 1
                     self.s.save.save()
             elif self.choice_idx == 2:
@@ -457,7 +599,7 @@ class KarmaHubState:
     def draw(self, surf: pg.Surface) -> None:
         surf.fill((14, 14, 20))
         draw_text(surf, self.s.font, "Karma Hub", (6, 6), COL_TEXT)
-        draw_text(surf, self.s.font, f"Karma: {self.s.save.karma}", (6, 22), COL_KARMA_POS)
+        draw_text(surf, self.s.font, f"Good: {self.s.save.good_karma}  Bad: {self.s.save.bad_karma}", (6, 22), (210, 210, 225))
         draw_text(surf, self.s.font, f"Upgrades: +HP {self.s.save.max_hp_up}  +DMG {self.s.save.dmg_up}", (6, 38), (200, 200, 215))
 
         self._relayout()
