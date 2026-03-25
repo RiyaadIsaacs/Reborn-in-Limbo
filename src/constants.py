@@ -1,10 +1,7 @@
-SCREEN_W = 960
-SCREEN_H = 540
-
 # Pixel-art friendly scaling: use a low virtual resolution, scale up.
 VIRTUAL_W = 320
 VIRTUAL_H = 180
-SCALE = 3  # VIRTUAL * SCALE -> window size
+MIN_SCALE = 1
 
 FPS = 60
 

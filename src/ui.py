@@ -29,6 +29,76 @@ def draw_text(
     surf.blit(img, pos)
 
 
+def wrap_text(font: pg.font.Font, text: str, max_width: int) -> list[str]:
+    """Simple greedy word-wrap for pygame fonts."""
+    words = (text or "").replace("\n", " \n ").split()
+    lines: list[str] = []
+    cur: list[str] = []
+
+    def flush() -> None:
+        nonlocal cur
+        if cur:
+            lines.append(" ".join(cur))
+            cur = []
+
+    for w in words:
+        if w == "\n":
+            flush()
+            continue
+        test = (" ".join(cur + [w])).strip()
+        if not test:
+            continue
+        if font.size(test)[0] <= max_width:
+            cur.append(w)
+            continue
+        # If single word is too long, hard-split.
+        if not cur:
+            s = w
+            while s:
+                # Find max prefix that fits
+                lo, hi = 1, len(s)
+                best = 1
+                while lo <= hi:
+                    mid = (lo + hi) // 2
+                    if font.size(s[:mid])[0] <= max_width:
+                        best = mid
+                        lo = mid + 1
+                    else:
+                        hi = mid - 1
+                lines.append(s[:best])
+                s = s[best:]
+            continue
+        flush()
+        cur.append(w)
+
+    flush()
+    return lines
+
+
+def draw_wrapped_text(
+    surf: pg.Surface,
+    font: pg.font.Font,
+    text: str,
+    rect: pg.Rect,
+    *,
+    color: tuple[int, int, int] = COL_TEXT,
+    line_gap: int = 2,
+    max_lines: int | None = None,
+) -> int:
+    """Draw wrapped text in rect. Returns last y used."""
+    lines = wrap_text(font, text, rect.w)
+    if max_lines is not None:
+        lines = lines[:max_lines]
+    y = rect.y
+    for line in lines:
+        img = font.render(line, True, color)
+        surf.blit(img, (rect.x, y))
+        y += img.get_height() + line_gap
+        if y > rect.bottom:
+            break
+    return y
+
+
 def draw_button(
     surf: pg.Surface,
     font: pg.font.Font,
@@ -42,5 +112,44 @@ def draw_button(
     pg.draw.rect(surf, border, btn.rect, width=2)
     label_col = COL_TEXT if btn.enabled else COL_TEXT_DIM
     img = font.render(btn.label, True, label_col)
-    surf.blit(img, (btn.rect.x + 6, btn.rect.y + 6))
+    # Vertical padding tuned for small virtual resolution.
+    surf.blit(img, (btn.rect.x + 6, btn.rect.y + 3))
+
+
+def layout_vstack(
+    *,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    count: int,
+    item_h: int,
+    gap: int,
+) -> list[pg.Rect]:
+    """Create a vertical stack of rects, clamped to available space.
+
+    If the requested total height doesn't fit, the gap is reduced first, then item height.
+    """
+    if count <= 0:
+        return []
+    gap = max(0, gap)
+    item_h = max(8, item_h)
+
+    total = count * item_h + (count - 1) * gap
+    if total > h:
+        # Reduce gap as much as possible.
+        max_gap = (h - count * item_h) // max(1, count - 1)
+        gap = max(0, max_gap)
+        total = count * item_h + (count - 1) * gap
+    if total > h:
+        # Reduce item height if still too tall.
+        item_h = max(8, (h - (count - 1) * gap) // count)
+        total = count * item_h + (count - 1) * gap
+
+    rects: list[pg.Rect] = []
+    cy = y + max(0, (h - total) // 2)
+    for _ in range(count):
+        rects.append(pg.Rect(x, cy, w, item_h))
+        cy += item_h + gap
+    return rects
 

@@ -22,3 +22,7 @@ Thumbs.db
 # Logs
 *.log
 
+# Local save/config
+save.json
+config.json
+
