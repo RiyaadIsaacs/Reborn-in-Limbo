@@ -1,0 +1,41 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+import json
+import random
+from typing import Any
+
+
+def clamp(v: float, lo: float, hi: float) -> float:
+    return lo if v < lo else hi if v > hi else v
+
+
+def lerp(a: float, b: float, t: float) -> float:
+    return a + (b - a) * t
+
+
+def get_save_path() -> Path:
+    # Keep save data inside the repo for jam simplicity.
+    # (If you prefer user profile later, we can switch.)
+    return Path("save.json")
+
+
+def load_json(path: Path, default: Any) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def save_json(path: Path, data: Any) -> None:
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+@dataclass(frozen=True)
+class RNG:
+    seed: int
+
+    def make(self) -> random.Random:
+        return random.Random(self.seed)
+

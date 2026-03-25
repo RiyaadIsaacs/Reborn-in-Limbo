@@ -1,0 +1,25 @@
+SCREEN_W = 960
+SCREEN_H = 540
+
+# Pixel-art friendly scaling: use a low virtual resolution, scale up.
+VIRTUAL_W = 320
+VIRTUAL_H = 180
+SCALE = 3  # VIRTUAL * SCALE -> window size
+
+FPS = 60
+
+# Colors (RGB)
+COL_BG = (18, 18, 24)
+COL_PANEL = (30, 30, 42)
+COL_PANEL_BORDER = (120, 120, 160)
+COL_TEXT = (235, 235, 245)
+COL_TEXT_DIM = (180, 180, 200)
+
+COL_PLAYER = (120, 210, 255)
+COL_ENEMY = (200, 110, 160)
+COL_GATEKEEPER = (140, 80, 200)
+
+COL_HP = (220, 70, 70)
+COL_KARMA_POS = (250, 210, 90)
+COL_KARMA_NEG = (110, 150, 240)
+
