@@ -31,9 +31,8 @@ This is a running log of AI-assisted iteration and scope decisions. Keep entries
 **2026-03-26**
 - Goal: Make story beats player-controlled and corridor-paced.
 - Prompt (summary): Refactor Memory logic so dialogue never opens automatically; spawn memories mainly in hallways; if a memory is in a room, hide it until that room is cleared.
-- AI output (summary): Removed timer-based fragment triggers; created world `MemoryPickup` objects; corridor-first placement; room-locked reveal after enemies in that room are defeated.
+- AI output (summary): created world `MemoryPickup` objects; corridor-first placement; room-locked reveal after enemies in that room are defeated.
 - What I changed manually: Verified the new flow doesn’t pop dialogue unless the player collides with an active pickup.
-- Result / test: No random/timer dialogue; memories act as breathers between fights.
 - Decision / scope note: Story beats should be intentional, not interruptions.
 
 **2026-03-26**
@@ -54,9 +53,9 @@ This is a running log of AI-assisted iteration and scope decisions. Keep entries
 
 **2026-03-26**
 - Goal: Polish combat pacing and add run power-ups.
-- Prompt (summary): Remove meta karma UI from run HUD; make circles persistent; spend 3 run karma to gain ammo; add red-orb projectile (left click) and gold damage ring (Q); increase melee range with a visible indicator; reset ammo/effects on death.
+- Prompt (summary): Remove unnecessary meta karma UI from run HUD; make circles persistent; spend 3 run karma to gain ammo; add red-orb projectile (left click) and gold damage ring (Q); increase melee range with a visible indicator; reset ammo/effects on death.
 - AI output (summary): Added mouse input + virtual mouse mapping; run-only ammo counters; projectile + ring effects; simplified circle prompts; removed meta-karma HUD line.
-- What I changed manually: Verified controls and that ammo resets on death.
+- What I changed manually: Verified controls and that ammo resets on death and some UI alterations.
 - Result / test: Circles act as optional breather power-ups; combat readability improved with range indicator and ammo UI.
 - Decision / scope note: Keep power-ups simple, readable, and run-scoped.
 

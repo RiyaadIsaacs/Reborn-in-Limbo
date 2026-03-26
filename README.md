@@ -1,9 +1,9 @@
 # Reborn in Limbo (Prototype)
 
-AI-assisted 2D pixel-art roguelike prototype. Memory fragments are physical pickups (mostly in corridors) that open a dialogue choice overlay only when collected. Karma is spent between runs on permanent upgrades.
+AI-assisted 2D pixel-art roguelike prototype.
 
 ## Status
-Playable jam prototype: hub → run → corridor memory pickups → combat rooms → locked final boss room.
+Playable jam prototype: hub → run → corridor memory pickups → combat rooms → final boss room.
 
 ## Run
 1. Install Python 3.11+
@@ -26,29 +26,25 @@ Playable jam prototype: hub → run → corridor memory pickups → combat rooms
 - **Circles / power-ups**:
   - **Gold circle**: press **E** to spend **3 Good(run) karma** → gain **+1 GoldAmmo**
   - **Red circle**: press **E** to spend **3 Bad(run) karma** → gain **+2 RedAmmo**
-  - Circles **do not disappear** after use.
 - **Ammo UI**: RedAmmo/GoldAmmo are shown on the in-run HUD and reset on death.
 - **Pause menu**: Esc opens Resume / Settings / Return to Hub.
 - **Settings -> Controls**: dedicated controls reference screen.
 - **Hub menu**: includes an **Exit_Game** option.
 
-## AI usage (will be expanded)
-- Code: Cursor (AI-assisted IDE)
-- Art: AI tools + manual pixel clean-up
 
-## Recording Videos (Day 2 and Day 3)
-- Record 2–5 minutes showing:
-  - Karma Hub -> start run -> collect a memory pickup (dialogue opens) -> combat -> enter boss room (locks) -> defeat boss -> victory -> back to hub
-  - Explain which parts were AI-generated and what you changed by hand
-- Tools: OBS Studio, Xbox Game Bar, or any screen recorder.
+## Reflections
 
-## AI Ethics Statement (Draft)
-This project uses AI tools to assist with code and asset creation. All AI-generated outputs are reviewed, tested, and modified where needed. Any AI-generated art, audio, or text will be credited (tool name + what was generated) and will not include restricted or offensive content. Where external assets are used, licenses and sources will be documented to support fair use and originality requirements.
+Where AI excelled:
+AI did well with making basic classes and building blocks for each class so that I could alter classes for my specfic needs. Cursor was strongest when I had a clear prompt that was set up for making: state-machine changes, UI text adjustments, room generation logic, and looking through other coding tasks, were completed in a much faster fashion than if done solo. It also helped maintain the github repository really well. 
 
-## Reflections (To Fill In)
-Write ~200 words each:
-- Where did AI excel, and where did it mislead or limit you?
-- How did AI alter your creative or technical process?
-- What would you change about your collaboration with AI next time?
-- Ethical considerations: originality, transparency, fair use, and crediting.
+Where it misled me: 
+Cursor made assumptions about some design choices and those had to be manually edited (intrusive automated dialogue on a random timer and visual processing in image gen that had artifacting). Some generated things were blurry or unreadable and required some photoshop work. AI also occasionally produced implementation like it designed the attack feature without considering the visual aspect for the player to see their attack range.
+
+How AI altered the creative process:
+AI shifted my workflow from "build and see if an idea works" to "Rapid prototype a mechanic and see if it fits."This cut down obvious long drawn out design choices allowing for clean and quick finalization of what the final MVP would be. This worked out best with the connected systems like spawning rules, combat input mapping, and state transitions for the enemy AI's.
+
+Ethical considerations:
+My approach was to treat Cursor as a junior that can be told specific instructions while I make the final design choices. Originality was kept up by making changes to code in the project; places where the AI would consistetnly misinterpret the idea I tried to communicate. The overall design choices such as the core loop structure and final feature acceptance were my decisions as well. Cursor AI did provide drafts and alternatives that were worth considering but did not fit the overall idea the game needed to be. Transparency is addressed through the refinement log that cursor managed and documented the AI involvement in code and content.
+
+
 
