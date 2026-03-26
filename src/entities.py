@@ -47,6 +47,8 @@ class Enemy:
     speed: float = 25.0
     is_gatekeeper: bool = False
     room_idx: int = -1
+    # Boss stays inactive until the boss room has locked.
+    awake: bool = True
 
     def rect(self) -> pg.Rect:
         return pg.Rect(int(self.pos.x - self.radius), int(self.pos.y - self.radius), self.radius * 2, self.radius * 2)

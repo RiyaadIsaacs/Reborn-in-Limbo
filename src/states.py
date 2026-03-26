@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import random
+from pathlib import Path
 from typing import Protocol
 
 import pygame as pg
@@ -39,6 +40,7 @@ class Shared:
     rng: random.Random
     cfg: "AppConfig"
     window_request: "WindowRequest | None" = None
+    mouse_vpos: pg.Vector2 = field(default_factory=lambda: pg.Vector2(0, 0))
 
 
 @dataclass
@@ -48,9 +50,56 @@ class WindowRequest:
     fullscreen: bool = False
 
 
+@dataclass
+class MemoryPickup:
+    """World memory fragment: dialogue opens only on player collision when active."""
+
+    pos: pg.Vector2
+    fragment: MemoryFragment
+    # If set, pickup stays hidden until no living enemies remain in this room.
+    lock_room: int | None = None
+    active: bool = True
+
+
+@dataclass
+class Projectile:
+    pos: pg.Vector2
+    vel: pg.Vector2
+    radius: int
+    dmg: int
+    ttl: float
+
+
 class LimboRunState:
     def __init__(self, shared: Shared) -> None:
         self.s = shared
+        # Assets
+        self._asset_root = Path(__file__).resolve().parent.parent / "assets"
+        try:
+            self._bg_img = pg.image.load(str(self._asset_root / "background.png")).convert()
+        except Exception:
+            self._bg_img = None
+        try:
+            self._player_img = pg.image.load(str(self._asset_root / "player.png")).convert_alpha()
+        except Exception:
+            self._player_img = None
+        try:
+            self._enemy_img = pg.image.load(str(self._asset_root / "enemy.png")).convert_alpha()
+        except Exception:
+            self._enemy_img = None
+        try:
+            self._boss_img = pg.image.load(str(self._asset_root / "boss.png")).convert_alpha()
+        except Exception:
+            self._boss_img = None
+        try:
+            self._tile_floor_img = pg.image.load(str(self._asset_root / "tile_floor.png")).convert()
+        except Exception:
+            self._tile_floor_img = None
+        try:
+            self._tile_wall_img = pg.image.load(str(self._asset_root / "tile_wall.png")).convert()
+        except Exception:
+            self._tile_wall_img = None
+
         max_hp = 5 + self.s.save.max_hp_up
         dmg = 1 + self.s.save.dmg_up
         self.player = Player(pos=pg.Vector2(VIRTUAL_W / 2, VIRTUAL_H / 2), vel=pg.Vector2(0, 0), hp=max_hp, stats=Stats(max_hp=max_hp, dmg=dmg, speed=60.0))
@@ -58,9 +107,20 @@ class LimboRunState:
         self.karma_good_run: int = 0
         self.karma_bad_run: int = 0
         self._spawn_timer = 0.0
-        self._fragments_seen = 0
-        self._next_fragment_at = 4.0
-        self._gatekeeper_spawned = False
+
+        # Power-up ammo (run-only; resets on death)
+        self.red_ammo: int = 0
+        self.gold_ammo: int = 0
+        self._projectiles: list[Projectile] = []
+        self._shoot_cd: float = 0.0
+
+        # Golden ring (run-only)
+        self._ring_active_t: float = 0.0
+        self._ring_tick: float = 0.0
+        self._ring_radius: float = 26.0
+
+        # Melee tuning + indicator
+        self._melee_range: float = 28.0
 
         # World + camera
         self._cell = 8
@@ -82,8 +142,22 @@ class LimboRunState:
         )
         self._tiles: list[list[int]] = [[0 for _ in range(self._grid_w)] for _ in range(self._grid_h)]
         self._build_dungeon_tiles()
+        # Cache scaled tiles for current cell size (fast blits).
+        self._tile_floor_scaled = (
+            pg.transform.scale(self._tile_floor_img, (self._cell, self._cell)) if self._tile_floor_img is not None else None
+        )
+        self._tile_wall_scaled = (
+            pg.transform.scale(self._tile_wall_img, (self._cell, self._cell)) if self._tile_wall_img is not None else None
+        )
+        self._boss_room_idx = max(0, len(self.dungeon.rooms) - 1)
+        self._boss_room_locked = False
+        self._boss_entity_spawned = False
+        self._boss_wake_timer = 0.0
+        self._last_player_room = -999
+        self._boss_gate_cells = self._compute_boss_gate_cells()
+        self._boss_gate_restore = [(gx, gy, self._tiles[gy][gx]) for gx, gy in self._boss_gate_cells]
         self._spawn_room_enemies()
-        self._spawn_room_memory_pickups()
+        self._spawn_memory_objects()
 
         # Special room circles
         self._room_special: dict[int, str] = {}  # room_idx -> "purify" | "corrupt"
@@ -102,10 +176,12 @@ class LimboRunState:
         self.s.inp.handle_event(e)
 
     def _spawn_enemy(self) -> None:
-        # Spawn an enemy inside a random room interior.
-        if not self.dungeon.rooms:
+        # Spawn an enemy inside a random non boss room interior (never the boss arena).
+        candidates = [i for i, room in enumerate(self.dungeon.rooms) if not room.is_boss_room]
+        if not candidates:
             return
-        room = self.s.rng.choice(self.dungeon.rooms)
+        ridx = self.s.rng.choice(candidates)
+        room = self.dungeon.rooms[ridx]
         r = room.rect
         ix0, iy0 = r.x + 1, r.y + 1
         ix1, iy1 = r.x + r.w - 2, r.y + r.h - 2
@@ -113,7 +189,7 @@ class LimboRunState:
             return
         gx = self.s.rng.randint(ix0, ix1)
         gy = self.s.rng.randint(iy0, iy1)
-        self.enemies.append(Enemy(pos=pg.Vector2(gx * self._cell, gy * self._cell), hp=2, speed=22.0))
+        self.enemies.append(Enemy(pos=pg.Vector2(gx * self._cell, gy * self._cell), hp=2, speed=22.0, room_idx=ridx))
 
     def _build_dungeon_tiles(self) -> None:
         # 0 empty, 1 floor, 2 wall
@@ -126,12 +202,9 @@ class LimboRunState:
                         self._tiles[yy][xx] = 2 if is_wall else 1
 
         for cor in self.dungeon.corridors:
-            self._stamp_corridor(cor.a, cor.b, cor.width)
+            self._stamp_corridor(cor.a, cor.b, cor.mid, cor.width)
 
-    def _stamp_corridor(self, a: tuple[int, int], b: tuple[int, int], w: int) -> None:
-        ax, ay = a
-        bx, by = b
-        mid = (bx, ay) if self.s.rng.random() < 0.5 else (ax, by)
+    def _stamp_corridor(self, a: tuple[int, int], b: tuple[int, int], mid: tuple[int, int], w: int) -> None:
         for p0, p1 in ((a, mid), (mid, b)):
             x0, y0 = p0
             x1, y1 = p1
@@ -159,6 +232,93 @@ class LimboRunState:
                                     if 0 <= nx < self._grid_w and 0 <= ny < self._grid_h and self._tiles[ny][nx] == 0:
                                         self._tiles[ny][nx] = 2
 
+    def _in_boss_interior(self, gx: int, gy: int) -> bool:
+        r = self.dungeon.rooms[self._boss_room_idx].rect
+        return (r.x + 1) <= gx <= (r.x + r.w - 2) and (r.y + 1) <= gy <= (r.y + r.h - 2)
+
+    def _manhattan_l_path(self, a: tuple[int, int], mid: tuple[int, int], b: tuple[int, int]) -> list[tuple[int, int]]:
+        def seg(p0: tuple[int, int], p1: tuple[int, int]) -> list[tuple[int, int]]:
+            out: list[tuple[int, int]] = []
+            x0, y0 = p0
+            x1, y1 = p1
+            x, y = x0, y0
+            out.append((x, y))
+            while (x, y) != (x1, y1):
+                if x < x1:
+                    x += 1
+                elif x > x1:
+                    x -= 1
+                elif y < y1:
+                    y += 1
+                elif y > y1:
+                    y -= 1
+                else:
+                    break
+                out.append((x, y))
+            return out
+
+        first = seg(a, mid)
+        second = seg(mid, b)
+        if first and second and first[-1] == second[0]:
+            second = second[1:]
+        return first + second
+
+    def _compute_boss_gate_cells(self) -> list[tuple[int, int]]:
+        if len(self.dungeon.rooms) < 2 or not self.dungeon.corridors:
+            return []
+        cor = self.dungeon.corridors[-1]
+        boss_r = self.dungeon.rooms[self._boss_room_idx].rect
+        path = self._manhattan_l_path(cor.a, cor.mid, cor.b)
+        w = cor.width
+        gate_set: set[tuple[int, int]] = set()
+        first_inside: int | None = None
+        for i, (cx, cy) in enumerate(path):
+            if self._in_boss_interior(cx, cy):
+                first_inside = i
+                break
+        if first_inside is None or first_inside == 0:
+            bx, by = cor.b
+            for gy in range(self._grid_h):
+                for gx in range(self._grid_w):
+                    if self._tiles[gy][gx] != 1:
+                        continue
+                    if self._in_boss_interior(gx, gy):
+                        continue
+                    if abs(gx - bx) <= w + 2 and abs(gy - by) <= w + 2:
+                        gate_set.add((gx, gy))
+            return list(gate_set)
+        back = max(0, first_inside - max(4, w * 2))
+        for idx in range(back, first_inside):
+            cx, cy = path[idx]
+            nx, ny = path[idx + 1]
+            if cx != nx:
+                for k in range(-w + 1, w):
+                    gy = cy + k
+                    if 0 <= cx < self._grid_w and 0 <= gy < self._grid_h and self._tiles[gy][cx] == 1:
+                        if not self._in_boss_interior(cx, gy):
+                            gate_set.add((cx, gy))
+            elif cy != ny:
+                for k in range(-w + 1, w):
+                    gx = cx + k
+                    if 0 <= gx < self._grid_w and 0 <= cy < self._grid_h and self._tiles[cy][gx] == 1:
+                        if not self._in_boss_interior(gx, cy):
+                            gate_set.add((gx, cy))
+        return list(gate_set)
+
+    def _lock_boss_room(self) -> None:
+        if self._boss_room_locked:
+            return
+        self._boss_room_locked = True
+        for gx, gy in self._boss_gate_cells:
+            if 0 <= gx < self._grid_w and 0 <= gy < self._grid_h:
+                self._tiles[gy][gx] = 2
+        self._boss_wake_timer = 0.45
+
+    def _unlock_boss_gate(self) -> None:
+        for gx, gy, t in self._boss_gate_restore:
+            if 0 <= gx < self._grid_w and 0 <= gy < self._grid_h:
+                self._tiles[gy][gx] = t
+
     def _spawn_room_enemies(self) -> None:
         # Spawn enemies based on room index; later rooms have more enemies.
         for ridx, room in enumerate(self.dungeon.rooms):
@@ -169,49 +329,122 @@ class LimboRunState:
             inner_y1 = r.y + r.h - 2
             if inner_x1 <= inner_x0 or inner_y1 <= inner_y0:
                 continue
+            if room.is_boss_room:
+                continue
             for _ in range(room.enemy_count):
                 gx = self.s.rng.randint(inner_x0, inner_x1)
                 gy = self.s.rng.randint(inner_y0, inner_y1)
                 self.enemies.append(Enemy(pos=pg.Vector2(gx * self._cell, gy * self._cell), hp=2, speed=22.0, room_idx=ridx))
 
-    def _spawn_room_memory_pickups(self) -> None:
-        # Memory pickups: add karma when collected (good/bad split based on pickup type).
-        self.memory_pickups: list[tuple[pg.Vector2, int, int]] = []
-        # tuple: (pos, room_idx, karma_sign) where karma_sign is +1 (good) or -1 (bad)
-        for ridx, room in enumerate(self.dungeon.rooms):
-            r = room.rect
-            inner_x0 = r.x + 1
-            inner_y0 = r.y + 1
-            inner_x1 = r.x + r.w - 2
-            inner_y1 = r.y + r.h - 2
-            if inner_x1 <= inner_x0 or inner_y1 <= inner_y0:
+    def _corridor_floor_cells(self) -> list[tuple[int, int]]:
+        # Walkable tiles not inside any room interior (hallways / connectors).
+        out: list[tuple[int, int]] = []
+        for gy in range(self._grid_h):
+            for gx in range(self._grid_w):
+                if self._tiles[gy][gx] != 1:
+                    continue
+                if self._room_index_at_grid(gx, gy) == -1:
+                    out.append((gx, gy))
+        return out
+
+    def _random_room_inner_cell(self, ridx: int) -> tuple[int, int] | None:
+        r = self.dungeon.rooms[ridx].rect
+        inner_x0, inner_y0 = r.x + 1, r.y + 1
+        inner_x1, inner_y1 = r.x + r.w - 2, r.y + r.h - 2
+        if inner_x1 <= inner_x0 or inner_y1 <= inner_y0:
+            return None
+        gx = self.s.rng.randint(inner_x0, inner_x1)
+        gy = self.s.rng.randint(inner_y0, inner_y1)
+        return gx, gy
+
+    def _spawn_memory_objects(self) -> None:
+        # Story fragments: mostly on corridor tiles; optional second beat locked behind room clear.
+        frags = list(FRAGMENTS)
+        self.s.rng.shuffle(frags)
+        corridor = self._corridor_floor_cells()
+        self.s.rng.shuffle(corridor)
+        combat_rooms = [
+            i
+            for i, rm in enumerate(self.dungeon.rooms)
+            if not rm.is_boss_room and i != 0 and rm.enemy_count > 0
+        ]
+        self.memory_pickups: list[MemoryPickup] = []
+        second_in_room = len(frags) >= 2 and bool(combat_rooms)
+
+        for i, frag in enumerate(frags):
+            if second_in_room and i == 1:
+                ridx = self.s.rng.choice(combat_rooms)
+                inner = self._random_room_inner_cell(ridx)
+                if inner is None:
+                    continue
+                gx, gy = inner
+                self.memory_pickups.append(
+                    MemoryPickup(
+                        pos=pg.Vector2(gx * self._cell, gy * self._cell),
+                        fragment=frag,
+                        lock_room=ridx,
+                        active=False,
+                    )
+                )
                 continue
-            for _ in range(room.memory_count):
-                gx = self.s.rng.randint(inner_x0, inner_x1)
-                gy = self.s.rng.randint(inner_y0, inner_y1)
-                sign = 1 if self.s.rng.random() < 0.7 else -1
-                self.memory_pickups.append((pg.Vector2(gx * self._cell, gy * self._cell), ridx, sign))
+            if corridor:
+                gx, gy = corridor.pop()
+                self.memory_pickups.append(
+                    MemoryPickup(
+                        pos=pg.Vector2(gx * self._cell, gy * self._cell),
+                        fragment=frag,
+                        lock_room=None,
+                        active=True,
+                    )
+                )
+                continue
+            candidates = combat_rooms or [i for i, rm in enumerate(self.dungeon.rooms) if not rm.is_boss_room]
+            if not candidates:
+                continue
+            ridx = self.s.rng.choice(candidates)
+            inner = self._random_room_inner_cell(ridx)
+            if inner is None:
+                continue
+            gx, gy = inner
+            self.memory_pickups.append(
+                MemoryPickup(
+                    pos=pg.Vector2(gx * self._cell, gy * self._cell),
+                    fragment=frag,
+                    lock_room=ridx,
+                    active=False,
+                )
+            )
 
     def _assign_special_rooms(self) -> None:
         # Choose up to 2 rooms as special (excluding start room).
         candidate = list(range(len(self.dungeon.rooms)))
         if 0 in candidate:
             candidate.remove(0)
+        if len(self.dungeon.rooms) > 1 and self._boss_room_idx in candidate:
+            candidate.remove(self._boss_room_idx)
         self.s.rng.shuffle(candidate)
         if candidate:
             self._room_special[candidate[0]] = "purify"
         if len(candidate) > 1:
             self._room_special[candidate[1]] = "corrupt"
 
-    def _spawn_gatekeeper(self) -> None:
-        # Spawn in the last room center.
-        if self.dungeon.rooms:
-            cx, cy = self.dungeon.rooms[-1].rect.center()
-            pos = pg.Vector2(cx * self._cell, cy * self._cell)
-        else:
-            pos = pg.Vector2(self._world_w / 2, self._world_h / 2)
-        self.enemies.append(Enemy(pos=pos, hp=6, speed=18.0, is_gatekeeper=True, radius=8, room_idx=max(0, len(self.dungeon.rooms) - 1)))
-        self._gatekeeper_spawned = True
+    def _spawn_boss_entity(self) -> None:
+        if self._boss_entity_spawned or not self.dungeon.rooms:
+            return
+        cx, cy = self.dungeon.rooms[self._boss_room_idx].rect.center()
+        pos = pg.Vector2(cx * self._cell, cy * self._cell)
+        self.enemies.append(
+            Enemy(
+                pos=pos,
+                hp=6,
+                speed=18.0,
+                is_gatekeeper=True,
+                radius=8,
+                room_idx=self._boss_room_idx,
+                awake=True,
+            )
+        )
+        self._boss_entity_spawned = True
 
     def _room_index_at_grid(self, gx: int, gy: int) -> int:
         # Returns room index if inside its interior (not walls), else -1.
@@ -228,6 +461,8 @@ class LimboRunState:
         return self._tiles[gy][gx] == 1
 
     def update(self, dt: float) -> GameState | None:
+        self._shoot_cd = max(0.0, self._shoot_cd - dt)
+
         # Movement
         move = pg.Vector2(0, 0)
         if self.s.inp.down(pg.K_a) or self.s.inp.down(pg.K_LEFT):
@@ -245,12 +480,41 @@ class LimboRunState:
         # Attack (simple radius hit)
         if self.s.inp.pressed(pg.K_SPACE) and self.player.attack_cooldown_ms == 0:
             self.player.attack_cooldown_ms = 250
-            hit_r = 16
+            hit_r = int(self._melee_range)
             hit_pos = self.player.pos
             dmg = self.player.stats.dmg if self.player.stats else 1
             for en in self.enemies:
+                if not en.awake:
+                    continue
                 if (en.pos - hit_pos).length_squared() <= hit_r * hit_r:
                     en.hp -= dmg
+
+        # Red orb projectile (left click)
+        if self.s.inp.mouse_pressed(1) and self.red_ammo > 0 and self._shoot_cd <= 0.0:
+            self._shoot_cd = 0.18
+            self.red_ammo -= 1
+            # Aim towards mouse in world space (virtual coords + camera offset).
+            aim_world = pg.Vector2(self.s.mouse_vpos.x + self._cam.x, self.s.mouse_vpos.y + self._cam.y)
+            d = aim_world - self.player.pos
+            if d.length_squared() < 0.001:
+                d = pg.Vector2(1, 0)
+            d = d.normalize()
+            speed = 170.0
+            self._projectiles.append(
+                Projectile(
+                    pos=self.player.pos.copy(),
+                    vel=d * speed,
+                    radius=3,
+                    dmg=2,
+                    ttl=1.4,
+                )
+            )
+
+        # Gold ring activation (Q) - one at a time
+        if self.s.inp.pressed(pg.K_q) and self.gold_ammo > 0 and self._ring_active_t <= 0.0:
+            self.gold_ammo -= 1
+            self._ring_active_t = 5.0
+            self._ring_tick = 0.0
 
         # Update entities
         old_pos = self.player.pos.copy()
@@ -262,10 +526,23 @@ class LimboRunState:
         gy = int(self.player.pos.y) // self._cell
         if not self._is_walkable(gx, gy):
             self.player.pos = old_pos
+        gx = int(self.player.pos.x) // self._cell
+        gy = int(self.player.pos.y) // self._cell
+
+        player_room = self._room_index_at_grid(gx, gy)
+        bi = self._boss_room_idx
+        if not self._boss_room_locked and bi >= 0 and player_room == bi and self._last_player_room != bi:
+            self._lock_boss_room()
+
+        if self._boss_room_locked and not self._boss_entity_spawned:
+            self._boss_wake_timer -= dt
+            if self._boss_wake_timer <= 0:
+                self._spawn_boss_entity()
 
         # Enemy activation: only chase when player is inside enemy's room.
-        player_room = self._room_index_at_grid(gx, gy)
         for en in self.enemies:
+            if not en.awake:
+                continue
             if en.room_idx != player_room:
                 continue
             d = self.player.pos - en.pos
@@ -285,29 +562,81 @@ class LimboRunState:
                 en.pos.y = newy.y
         self.enemies = [e for e in self.enemies if e.hp > 0]
 
-        # Collect memory pickups (karma gain)
-        new_pickups: list[tuple[pg.Vector2, int, int]] = []
-        for ppos, ridx, sign in self.memory_pickups:
-            if (ppos - self.player.pos).length_squared() <= (self.player.radius + 4) ** 2:
-                if sign > 0:
-                    self.karma_good_run += 1
-                else:
-                    self.karma_bad_run += 1
-            else:
-                new_pickups.append((ppos, ridx, sign))
-        self.memory_pickups = new_pickups
+        # Projectiles update + collisions
+        if self._projectiles:
+            kept_proj: list[Projectile] = []
+            for p in self._projectiles:
+                p.ttl -= dt
+                if p.ttl <= 0:
+                    continue
+                p.pos += p.vel * dt
+                gx_p = int(p.pos.x) // self._cell
+                gy_p = int(p.pos.y) // self._cell
+                if not self._is_walkable(gx_p, gy_p):
+                    continue
+                hit = False
+                for en in self.enemies:
+                    if not en.awake:
+                        continue
+                    if (en.pos - p.pos).length_squared() <= (en.radius + p.radius) ** 2:
+                        en.hp -= p.dmg
+                        hit = True
+                        break
+                if hit:
+                    continue
+                kept_proj.append(p)
+            self._projectiles = kept_proj
+            self.enemies = [e for e in self.enemies if e.hp > 0]
 
-        # Special circle interaction (E)
-        if player_room in self._room_special and player_room not in self._circle_used:
-            if self.s.inp.pressed(pg.K_e):
-                kind = self._room_special[player_room]
-                if kind == "purify":
-                    self.s.save.good_karma = max(0, self.s.save.good_karma - 10)
-                else:
-                    self.s.save.bad_karma = max(0, self.s.save.bad_karma - 10)
-                self.s.save.save()
-                self._circle_used.add(player_room)
-                self._circle_fx[player_room] = 0.7
+        # Golden ring damage over time
+        if self._ring_active_t > 0.0:
+            self._ring_active_t = max(0.0, self._ring_active_t - dt)
+            self._ring_tick -= dt
+            if self._ring_tick <= 0.0:
+                self._ring_tick = 0.28
+                rr2 = self._ring_radius * self._ring_radius
+                for en in self.enemies:
+                    if not en.awake:
+                        continue
+                    if (en.pos - self.player.pos).length_squared() <= rr2:
+                        en.hp -= 1
+                self.enemies = [e for e in self.enemies if e.hp > 0]
+
+        for m in self.memory_pickups:
+            if m.lock_room is not None and not m.active:
+                if not any(e.room_idx == m.lock_room for e in self.enemies):
+                    m.active = True
+
+        # Memory fragments: dialogue only when player touches an active pickup (no timers).
+        pick_frag: MemoryFragment | None = None
+        kept_mem: list[MemoryPickup] = []
+        for m in self.memory_pickups:
+            if (
+                m.active
+                and pick_frag is None
+                and (m.pos - self.player.pos).length_squared() <= (self.player.radius + 4) ** 2
+            ):
+                pick_frag = m.fragment
+                continue
+            kept_mem.append(m)
+        self.memory_pickups = kept_mem
+        if pick_frag is not None:
+            return MemoryOverlayState(self.s, parent=self, fragment=pick_frag)
+
+        # Special circle interaction (E): circles persist; cost 3 run karma of matching type.
+        if player_room in self._room_special and self.s.inp.pressed(pg.K_e):
+            kind = self._room_special[player_room]
+            cost = 3
+            if kind == "purify":
+                if self.karma_good_run >= cost:
+                    self.karma_good_run -= cost
+                    self.gold_ammo += 1
+                    self._circle_fx[player_room] = 0.45
+            else:
+                if self.karma_bad_run >= cost:
+                    self.karma_bad_run -= cost
+                    self.red_ammo += 2
+                    self._circle_fx[player_room] = 0.45
 
         # FX timers
         for k in list(self._circle_fx.keys()):
@@ -318,6 +647,8 @@ class LimboRunState:
         # Contact damage
         if self.player.invuln_ms == 0:
             for en in self.enemies:
+                if not en.awake:
+                    continue
                 if (en.pos - self.player.pos).length_squared() <= (en.radius + self.player.radius) ** 2:
                     self.player.hp -= 1
                     self.player.invuln_ms = 650
@@ -325,6 +656,10 @@ class LimboRunState:
 
         # Death -> hub (permadeath)
         if self.player.hp <= 0:
+            self.red_ammo = 0
+            self.gold_ammo = 0
+            self._projectiles.clear()
+            self._ring_active_t = 0.0
             # Add run karma into meta currency and save.
             self.s.save.good_karma += self.karma_good_run
             self.s.save.bad_karma += self.karma_bad_run
@@ -333,31 +668,21 @@ class LimboRunState:
 
         # Spawning cadence
         self._spawn_timer += dt
-        if self._spawn_timer >= 2.5 and len(self.enemies) < 10 and not self._gatekeeper_spawned:
+        if self._spawn_timer >= 2.5 and len(self.enemies) < 10 and not self._boss_room_locked:
             self._spawn_timer = 0.0
             self._spawn_enemy()
 
-        # Trigger memory fragment overlay during run.
-        self._next_fragment_at -= dt
-        if self._next_fragment_at <= 0 and self._fragments_seen < 2:
-            self._fragments_seen += 1
-            self._next_fragment_at = 999.0
-            frag = self.s.rng.choice(FRAGMENTS)
-            return MemoryOverlayState(self.s, parent=self, fragment=frag)
-
-        # Spawn gatekeeper when "enough" fragments happened and enemies are cleared.
-        if self._fragments_seen >= 2 and not self._gatekeeper_spawned and len(self.enemies) == 0:
-            self._spawn_gatekeeper()
-
-        # Victory: gatekeeper defeated and was spawned.
-        if self._gatekeeper_spawned and len(self.enemies) == 0:
-            # Reward some karma for finishing.
+        # Victory: boss arena cleared after the boss spawned (exit re-opens).
+        if self._boss_entity_spawned and not any(e.is_gatekeeper for e in self.enemies):
+            self._unlock_boss_gate()
             self.karma_good_run += 3
             self.s.save.good_karma += self.karma_good_run
             self.s.save.bad_karma += self.karma_bad_run
             self.s.save.save()
+            self._last_player_room = player_room
             return VictoryState(self.s)
 
+        self._last_player_room = player_room
         return None
 
     def _update_camera(self) -> None:
@@ -369,7 +694,13 @@ class LimboRunState:
         self._cam.update(target_x, target_y)
 
     def draw(self, surf: pg.Surface) -> None:
-        surf.fill(COL_BG)
+        if self._bg_img is not None:
+            if self._bg_img.get_size() != (VIRTUAL_W, VIRTUAL_H):
+                surf.blit(pg.transform.scale(self._bg_img, (VIRTUAL_W, VIRTUAL_H)), (0, 0))
+            else:
+                surf.blit(self._bg_img, (0, 0))
+        else:
+            surf.fill(COL_BG)
         self._update_camera()
 
         floor_col = (45, 48, 64)
@@ -386,41 +717,71 @@ class LimboRunState:
                 t = self._tiles[y][x]
                 if t == 0:
                     continue
-                col = floor_col if t == 1 else wall_col
                 rx = x * self._cell - int(self._cam.x)
                 ry = y * self._cell - int(self._cam.y)
-                pg.draw.rect(surf, col, pg.Rect(rx, ry, self._cell, self._cell))
+                if t == 1 and self._tile_floor_scaled is not None:
+                    surf.blit(self._tile_floor_scaled, (rx, ry))
+                elif t == 2 and self._tile_wall_scaled is not None:
+                    surf.blit(self._tile_wall_scaled, (rx, ry))
+                else:
+                    col = floor_col if t == 1 else wall_col
+                    pg.draw.rect(surf, col, pg.Rect(rx, ry, self._cell, self._cell))
 
         # Draw entities with camera offset
         px = int(self.player.pos.x - self._cam.x)
         py = int(self.player.pos.y - self._cam.y)
-        pcol = (255, 255, 255) if self.player.invuln_ms > 0 else (120, 210, 255)
-        pg.draw.circle(surf, pcol, (px, py), self.player.radius)
+        # Melee range indicator
+        ind = pg.Surface((int(self._melee_range * 2 + 6), int(self._melee_range * 2 + 6)), pg.SRCALPHA)
+        pg.draw.circle(ind, (200, 200, 220, 40), (ind.get_width() // 2, ind.get_height() // 2), int(self._melee_range), width=1)
+        surf.blit(ind, (px - ind.get_width() // 2, py - ind.get_height() // 2))
+        if self._player_img is not None:
+            img = self._player_img
+            r = self.player.radius
+            target = (r * 4, r * 4)
+            if img.get_width() != target[0] or img.get_height() != target[1]:
+                img = pg.transform.scale(img, target)
+            surf.blit(img, (px - img.get_width() // 2, py - img.get_height() // 2))
+        else:
+            pcol = (255, 255, 255) if self.player.invuln_ms > 0 else (120, 210, 255)
+            pg.draw.circle(surf, pcol, (px, py), self.player.radius)
 
         for en in self.enemies:
             ex = int(en.pos.x - self._cam.x)
             ey = int(en.pos.y - self._cam.y)
             if ex < -20 or ey < -20 or ex > VIRTUAL_W + 20 or ey > VIRTUAL_H + 20:
                 continue
-            ecol = (140, 80, 200) if en.is_gatekeeper else (200, 110, 160)
-            pg.draw.circle(surf, ecol, (ex, ey), en.radius)
+            if en.is_gatekeeper and self._boss_img is not None:
+                img = self._boss_img
+                target = (en.radius * 8, en.radius * 8)
+                if img.get_size() != target:
+                    img = pg.transform.scale(img, target)
+                surf.blit(img, (ex - img.get_width() // 2, ey - img.get_height() // 2))
+            elif (not en.is_gatekeeper) and self._enemy_img is not None:
+                img = self._enemy_img
+                target = (en.radius * 5, en.radius * 5)
+                if img.get_size() != target:
+                    img = pg.transform.scale(img, target)
+                surf.blit(img, (ex - img.get_width() // 2, ey - img.get_height() // 2))
+            else:
+                ecol = (140, 80, 200) if en.is_gatekeeper else (200, 110, 160)
+                pg.draw.circle(surf, ecol, (ex, ey), en.radius)
 
-        # Draw memory pickups
-        for ppos, ridx, sign in getattr(self, "memory_pickups", []):
-            sx = int(ppos.x - self._cam.x)
-            sy = int(ppos.y - self._cam.y)
+        # Draw memory pickups (hidden until room clear when lock_room is set)
+        for m in getattr(self, "memory_pickups", []):
+            if not m.active:
+                continue
+            sx = int(m.pos.x - self._cam.x)
+            sy = int(m.pos.y - self._cam.y)
             if sx < -10 or sy < -10 or sx > VIRTUAL_W + 10 or sy > VIRTUAL_H + 10:
                 continue
-            col = (250, 210, 90) if sign > 0 else (110, 150, 240)
-            pg.draw.rect(surf, col, pg.Rect(sx - 2, sy - 2, 4, 4))
+            col = (250, 210, 90)
+            pg.draw.rect(surf, col, pg.Rect(sx - 3, sy - 3, 6, 6))
 
         # Draw special room circles
         player_gx = int(self.player.pos.x) // self._cell
         player_gy = int(self.player.pos.y) // self._cell
         player_room = self._room_index_at_grid(player_gx, player_gy)
         for ridx, kind in self._room_special.items():
-            if ridx in self._circle_used:
-                continue
             cx, cy = self.dungeon.rooms[ridx].rect.center()
             wx = cx * self._cell
             wy = cy * self._cell
@@ -432,11 +793,11 @@ class LimboRunState:
             if kind == "purify":
                 core = (255, 220, 110)
                 glow = (255, 220, 110, 90)
-                hover_text = "Hover_to_Purify (E)"
+                hover_text = "E: spend 3 Good karma"
             else:
                 core = (220, 80, 80)
                 glow = (220, 80, 80, 90)
-                hover_text = "Hover_to_Corrupt (E)"
+                hover_text = "E: spend 3 Bad karma"
 
             # Glow
             gsurf = pg.Surface((80, 80), pg.SRCALPHA)
@@ -469,8 +830,27 @@ class LimboRunState:
         # HUD
         draw_text(surf, self.s.font, f"HP: {self.player.hp}/{self.player.stats.max_hp if self.player.stats else self.player.hp}", (6, 6), COL_TEXT)
         draw_text(surf, self.s.font, f"Good(run): {self.karma_good_run}  Bad(run): {self.karma_bad_run}", (6, 22), (210, 210, 225))
-        draw_text(surf, self.s.font, f"Good(meta): {self.s.save.good_karma}  Bad(meta): {self.s.save.bad_karma}", (6, 36), (210, 210, 225))
+        draw_text(surf, self.s.font, f"RedAmmo: {self.red_ammo}  GoldAmmo: {self.gold_ammo}", (6, 36), (235, 220, 235))
         draw_text(surf, self.s.font, "Move: WASD/Arrows  Attack: Space", (6, VIRTUAL_H - 14), (170, 170, 190))
+
+        # Projectiles
+        for p in getattr(self, "_projectiles", []):
+            sx = int(p.pos.x - self._cam.x)
+            sy = int(p.pos.y - self._cam.y)
+            if sx < -10 or sy < -10 or sx > VIRTUAL_W + 10 or sy > VIRTUAL_H + 10:
+                continue
+            glow = pg.Surface((p.radius * 6, p.radius * 6), pg.SRCALPHA)
+            pg.draw.circle(glow, (220, 70, 70, 90), (glow.get_width() // 2, glow.get_height() // 2), p.radius * 2)
+            surf.blit(glow, (sx - glow.get_width() // 2, sy - glow.get_height() // 2))
+            pg.draw.circle(surf, (255, 120, 120), (sx, sy), p.radius)
+
+        # Golden ring visual
+        if getattr(self, "_ring_active_t", 0.0) > 0.0:
+            rr = int(self._ring_radius)
+            ring = pg.Surface((rr * 2 + 4, rr * 2 + 4), pg.SRCALPHA)
+            pg.draw.circle(ring, (255, 220, 110, 60), (rr + 2, rr + 2), rr, width=2)
+            pg.draw.circle(ring, (255, 220, 160, 20), (rr + 2, rr + 2), max(1, rr - 3), width=1)
+            surf.blit(ring, (px - rr - 2, py - rr - 2))
 
 
 class MemoryOverlayState:
@@ -505,8 +885,6 @@ class MemoryOverlayState:
                 self.parent.karma_good_run += choice.karma_delta
             else:
                 self.parent.karma_bad_run += abs(choice.karma_delta)
-            # Resume run; schedule next fragment later.
-            self.parent._next_fragment_at = 6.0
             return self.parent
 
         return None
@@ -538,8 +916,8 @@ class KarmaHubState:
         self.s = shared
         self.choice_idx = 0
         self._labels = [
-            "Upgrade_MaxHP (cost 5)",
-            "Upgrade_Damage (cost 5)",
+            "Upgrade_MaxHP (5 good karma)",
+            "Upgrade_Damage (5 bad karma)",
             "Settings (Resolution)",
             "Start_Run",
         ]
@@ -569,24 +947,13 @@ class KarmaHubState:
 
         if self.s.inp.pressed(pg.K_RETURN) or self.s.inp.pressed(pg.K_SPACE):
             if self.choice_idx == 0:
-                if self.s.save.good_karma + self.s.save.bad_karma >= 5:
-                    # Spend from good first.
-                    spend = 5
-                    take = min(self.s.save.good_karma, spend)
-                    self.s.save.good_karma -= take
-                    spend -= take
-                    if spend > 0:
-                        self.s.save.bad_karma = max(0, self.s.save.bad_karma - spend)
+                if self.s.save.good_karma >= 5:
+                    self.s.save.good_karma -= 5
                     self.s.save.max_hp_up += 1
                     self.s.save.save()
             elif self.choice_idx == 1:
-                if self.s.save.good_karma + self.s.save.bad_karma >= 5:
-                    spend = 5
-                    take = min(self.s.save.good_karma, spend)
-                    self.s.save.good_karma -= take
-                    spend -= take
-                    if spend > 0:
-                        self.s.save.bad_karma = max(0, self.s.save.bad_karma - spend)
+                if self.s.save.bad_karma >= 5:
+                    self.s.save.bad_karma -= 5
                     self.s.save.dmg_up += 1
                     self.s.save.save()
             elif self.choice_idx == 2:

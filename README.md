@@ -1,14 +1,32 @@
 # Reborn in Limbo (Prototype)
 
-AI-assisted 2D pixel-art roguelike prototype. Memory fragments appear during Limbo runs as dialogue choices that affect karma. Karma is spent between runs on upgrades and run items.
+AI-assisted 2D pixel-art roguelike prototype. Memory fragments are physical pickups (mostly in corridors) that open a dialogue choice overlay only when collected. Karma is spent between runs on permanent upgrades.
 
 ## Status
-Jam prototype scaffold (repo initialization).
+Playable jam prototype: hub → run → corridor memory pickups → combat rooms → locked final boss room.
 
 ## Run
 1. Install Python 3.11+
 2. Install deps: `pip install -r requirements.txt`
 3. Run: `python -m src.main`
+
+## Controls
+- **Move**: WASD / Arrow keys
+- **Attack**: Space
+- **Interact (special circles / power-ups)**: E
+- **Shoot red orb (costs RedAmmo)**: Left Click
+- **Activate gold ring (costs GoldAmmo)**: Q
+- **Fullscreen**: F11
+- **Maximize**: F10
+
+## Current gameplay notes (polished build)
+- **Memory fragments**: appear as pickups (mostly in corridors). Dialogue opens only when collected.
+- **Final boss room**: last room in the chain; entry locks until the boss is defeated.
+- **Circles / power-ups**:
+  - **Gold circle**: press **E** to spend **3 Good(run) karma** → gain **+1 GoldAmmo**
+  - **Red circle**: press **E** to spend **3 Bad(run) karma** → gain **+2 RedAmmo**
+  - Circles **do not disappear** after use.
+- **Ammo UI**: RedAmmo/GoldAmmo are shown on the in-run HUD and reset on death.
 
 ## AI usage (will be expanded)
 - Code: Cursor (AI-assisted IDE)
@@ -16,7 +34,7 @@ Jam prototype scaffold (repo initialization).
 
 ## Recording Videos (Day 2 and Day 3)
 - Record 2–5 minutes showing:
-  - Karma Hub -> start run -> memory fragment choice -> combat -> death (or Gatekeeper victory) -> back to hub
+  - Karma Hub -> start run -> collect a memory pickup (dialogue opens) -> combat -> enter boss room (locks) -> defeat boss -> victory -> back to hub
   - Explain which parts were AI-generated and what you changed by hand
 - Tools: OBS Studio, Xbox Game Bar, or any screen recorder.
 

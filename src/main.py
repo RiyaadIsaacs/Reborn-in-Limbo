@@ -25,6 +25,20 @@ def _blit_scaled(virtual: pg.Surface, window: pg.Surface) -> None:
     pg.transform.scale(virtual, (sw, sh), window.subsurface(pg.Rect(x, y, sw, sh)))
 
 
+def _window_mouse_to_virtual(window: pg.Surface) -> tuple[int, int]:
+    ww, wh = window.get_size()
+    scale = _compute_scale((ww, wh))
+    sw, sh = VIRTUAL_W * scale, VIRTUAL_H * scale
+    ox = (ww - sw) // 2
+    oy = (wh - sh) // 2
+    mx, my = pg.mouse.get_pos()
+    vx = (mx - ox) // max(1, scale)
+    vy = (my - oy) // max(1, scale)
+    vx = max(0, min(VIRTUAL_W - 1, int(vx)))
+    vy = max(0, min(VIRTUAL_H - 1, int(vy)))
+    return vx, vy
+
+
 def _set_window(cfg: AppConfig) -> pg.Surface:
     flags = pg.RESIZABLE
     if cfg.fullscreen:
@@ -89,6 +103,7 @@ def main() -> None:
                         window = _set_window(cfg)
                 state.handle_event(e)
 
+        shared.mouse_vpos = pg.Vector2(_window_mouse_to_virtual(window))
         nxt = state.update(dt)
         if nxt is not None:
             state = nxt

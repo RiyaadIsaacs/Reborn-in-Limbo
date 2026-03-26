@@ -6,12 +6,12 @@ This prototype demonstrates AI-assisted development of a **roguelike loop** with
 ## MVP Requirements
 1. Start Limbo run.
 2. Player can move and fight enemies (simple combat).
-3. Memory fragments appear during the run as an overlay with 1-3 choices.
+3. Memory fragments exist as pickups in the world; dialogue overlay opens only when collected.
 4. Each choice grants **karma** (prototype scope: karma-only effects).
-5. Enemies are cleared until a **Gatekeeper** spawns.
-6. Defeating the Gatekeeper breaks the curse (victory).
+5. The final room is a dedicated **Boss Room** at the end of a hallway (no standard enemies spawn inside it).
+6. Entering the Boss Room locks the entrance until the boss is defeated (victory).
 7. If the player dies (permadeath), the run ends and the player returns to a **Karma Hub**.
-8. In the Karma Hub, the player can spend karma on 2 permanent upgrades (saved to disk).
+8. In the Karma Hub, the player can spend karma on 2 permanent upgrades (saved to disk): MaxHP uses good karma; damage uses bad karma.
 9. Restarting starts a new run with upgraded stats.
 
 ## Explicit Out Of Scope
