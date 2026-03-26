@@ -463,6 +463,9 @@ class LimboRunState:
     def update(self, dt: float) -> GameState | None:
         self._shoot_cd = max(0.0, self._shoot_cd - dt)
 
+        if self.s.inp.pressed(pg.K_ESCAPE):
+            return PauseMenuState(self.s, parent=self)
+
         # Movement
         move = pg.Vector2(0, 0)
         if self.s.inp.down(pg.K_a) or self.s.inp.down(pg.K_LEFT):
@@ -829,9 +832,9 @@ class LimboRunState:
 
         # HUD
         draw_text(surf, self.s.font, f"HP: {self.player.hp}/{self.player.stats.max_hp if self.player.stats else self.player.hp}", (6, 6), COL_TEXT)
-        draw_text(surf, self.s.font, f"Good(run): {self.karma_good_run}  Bad(run): {self.karma_bad_run}", (6, 22), (210, 210, 225))
+        draw_text(surf, self.s.font, f"Good karma: {self.karma_good_run}  Bad karma: {self.karma_bad_run}", (6, 22), (210, 210, 225))
         draw_text(surf, self.s.font, f"RedAmmo: {self.red_ammo}  GoldAmmo: {self.gold_ammo}", (6, 36), (235, 220, 235))
-        draw_text(surf, self.s.font, "Move: WASD/Arrows  Attack: Space", (6, VIRTUAL_H - 14), (170, 170, 190))
+        draw_text(surf, self.s.font, "Move: WASD/Arrows  Attack: Space  Shoot: LMB  Ring: Q  Pause: Esc", (6, VIRTUAL_H - 14), (170, 170, 190))
 
         # Projectiles
         for p in getattr(self, "_projectiles", []):
@@ -911,6 +914,52 @@ class MemoryOverlayState:
         draw_text(surf, self.s.font, "Enter/Space: select  Esc: close", (panel.x + 8, panel.bottom - 14), (170, 170, 190))
 
 
+class PauseMenuState:
+    def __init__(self, shared: Shared, *, parent: LimboRunState) -> None:
+        self.s = shared
+        self.parent = parent
+        self.choice_idx = 0
+        self._labels = [
+            "Resume",
+            "Settings",
+            "Return_to_Hub",
+        ]
+        self._btns: list[Button] = [Button(pg.Rect(0, 0, 0, 0), lab) for lab in self._labels]
+        rects = layout_vstack(x=90, y=64, w=VIRTUAL_W - 180, h=80, count=len(self._btns), item_h=16, gap=6)
+        for b, r in zip(self._btns, rects, strict=False):
+            b.rect = r
+
+    def handle_event(self, e: pg.event.Event) -> None:
+        self.s.inp.handle_event(e)
+
+    def update(self, dt: float) -> GameState | None:
+        if self.s.inp.pressed(pg.K_ESCAPE):
+            return self.parent
+        if self.s.inp.pressed(pg.K_UP) or self.s.inp.pressed(pg.K_w):
+            self.choice_idx = (self.choice_idx - 1) % len(self._btns)
+        if self.s.inp.pressed(pg.K_DOWN) or self.s.inp.pressed(pg.K_s):
+            self.choice_idx = (self.choice_idx + 1) % len(self._btns)
+        if self.s.inp.pressed(pg.K_RETURN) or self.s.inp.pressed(pg.K_SPACE):
+            if self.choice_idx == 0:
+                return self.parent
+            if self.choice_idx == 1:
+                return SettingsState(self.s, return_to=self.parent)
+            return KarmaHubState(self.s)
+        return None
+
+    def draw(self, surf: pg.Surface) -> None:
+        self.parent.draw(surf)
+        dim = pg.Surface((VIRTUAL_W, VIRTUAL_H), pg.SRCALPHA)
+        dim.fill((0, 0, 0, 150))
+        surf.blit(dim, (0, 0))
+        panel = pg.Rect(70, 40, VIRTUAL_W - 140, VIRTUAL_H - 80)
+        draw_panel(surf, panel)
+        draw_text(surf, self.s.font, "Paused", (panel.x + 8, panel.y + 8), COL_TEXT)
+        for i, b in enumerate(self._btns):
+            draw_button(surf, self.s.font, b, focused=(i == self.choice_idx))
+        draw_text(surf, self.s.font, "Esc: resume", (panel.x + 8, panel.bottom - 14), (170, 170, 190))
+
+
 class KarmaHubState:
     def __init__(self, shared: Shared) -> None:
         self.s = shared
@@ -920,6 +969,7 @@ class KarmaHubState:
             "Upgrade_Damage (5 bad karma)",
             "Settings (Resolution)",
             "Start_Run",
+            "Exit_Game",
         ]
         self.btns: list[Button] = [Button(pg.Rect(0, 0, 0, 0), lab) for lab in self._labels]
 
@@ -960,6 +1010,8 @@ class KarmaHubState:
                 return SettingsState(self.s)
             elif self.choice_idx == 3:
                 return LimboRunState(self.s)
+            elif self.choice_idx == 4:
+                pg.event.post(pg.event.Event(pg.QUIT))
 
         return None
 
@@ -1006,24 +1058,25 @@ class SettingsState:
         (1920, 1080),
     ]
 
-    def __init__(self, shared: Shared) -> None:
+    def __init__(self, shared: Shared, *, return_to: GameState | None = None) -> None:
         self.s = shared
         self.idx = 0
         self.custom_w = self.s.cfg.window_w
         self.custom_h = self.s.cfg.window_h
-        self.focus = 0  # 0 preset, 1 w, 2 h, 3 apply/save, 4 back
+        self.return_to = return_to
+        self.focus = 0  # 0 preset, 1 w, 2 h, 3 apply/save, 4 controls, 5 back
 
     def handle_event(self, e: pg.event.Event) -> None:
         self.s.inp.handle_event(e)
 
     def update(self, dt: float) -> GameState | None:
         if self.s.inp.pressed(pg.K_ESCAPE):
-            return KarmaHubState(self.s)
+            return self.return_to if self.return_to is not None else KarmaHubState(self.s)
 
         if self.s.inp.pressed(pg.K_UP) or self.s.inp.pressed(pg.K_w):
-            self.focus = (self.focus - 1) % 5
+            self.focus = (self.focus - 1) % 6
         if self.s.inp.pressed(pg.K_DOWN) or self.s.inp.pressed(pg.K_s):
-            self.focus = (self.focus + 1) % 5
+            self.focus = (self.focus + 1) % 6
 
         if self.focus == 0:
             if self.s.inp.pressed(pg.K_LEFT) or self.s.inp.pressed(pg.K_a):
@@ -1056,7 +1109,9 @@ class SettingsState:
                 self.s.cfg.save()
                 self.s.window_request = WindowRequest(window_w=self.custom_w, window_h=self.custom_h, fullscreen=False)
             elif self.focus == 4:
-                return KarmaHubState(self.s)
+                return ControlsState(self.s, return_to=self)
+            elif self.focus == 5:
+                return self.return_to if self.return_to is not None else KarmaHubState(self.s)
 
         return None
 
@@ -1075,8 +1130,46 @@ class SettingsState:
         y += 26
         draw_text(surf, self.s.font, "Apply + Save (resets fullscreen)", (12, y), (235, 235, 245) if self.focus == 3 else (170, 170, 190))
         y += 18
-        draw_text(surf, self.s.font, "Back", (12, y), (235, 235, 245) if self.focus == 4 else (170, 170, 190))
+        draw_text(surf, self.s.font, "Controls", (12, y), (235, 235, 245) if self.focus == 4 else (170, 170, 190))
+        y += 18
+        draw_text(surf, self.s.font, "Back", (12, y), (235, 235, 245) if self.focus == 5 else (170, 170, 190))
 
         draw_text(surf, self.s.font, "Tip: Drag corners to resize. F11 fullscreen, F10 maximize.", (6, VIRTUAL_H - 14), (170, 170, 190))
 
+
+class ControlsState:
+    def __init__(self, shared: Shared, *, return_to: GameState | None = None) -> None:
+        self.s = shared
+        self.return_to = return_to
+
+    def handle_event(self, e: pg.event.Event) -> None:
+        self.s.inp.handle_event(e)
+
+    def update(self, dt: float) -> GameState | None:
+        if (
+            self.s.inp.pressed(pg.K_ESCAPE)
+            or self.s.inp.pressed(pg.K_RETURN)
+            or self.s.inp.pressed(pg.K_SPACE)
+        ):
+            return self.return_to if self.return_to is not None else KarmaHubState(self.s)
+        return None
+
+    def draw(self, surf: pg.Surface) -> None:
+        surf.fill((12, 12, 18))
+        draw_text(surf, self.s.font, "Controls", (6, 6), COL_TEXT)
+        y = 28
+        lines = [
+            "Move: WASD / Arrow keys",
+            "Attack (melee): Space",
+            "Interact circles: E",
+            "Shoot red orb (if ammo): Left Click",
+            "Activate gold ring (if ammo): Q",
+            "Pause/Resume in run: Esc",
+            "Navigate menus: Up/Down + Enter/Space",
+            "Fullscreen: F11    Maximize: F10",
+        ]
+        for ln in lines:
+            draw_text(surf, self.s.font, ln, (12, y), (210, 210, 225))
+            y += 16
+        draw_text(surf, self.s.font, "Enter/Space/Esc: Back", (6, VIRTUAL_H - 14), (170, 170, 190))
 

@@ -60,3 +60,11 @@ This is a running log of AI-assisted iteration and scope decisions. Keep entries
 - Result / test: Circles act as optional breather power-ups; combat readability improved with range indicator and ammo UI.
 - Decision / scope note: Keep power-ups simple, readable, and run-scoped.
 
+**2026-03-26**
+- Goal: Improve usability and discoverability.
+- Prompt (summary): Add a pause menu on Esc, add a Controls page under Settings, and add Exit Game in the hub.
+- AI output (summary): Added `PauseMenuState` (Resume/Settings/Return to Hub), `ControlsState` under Settings, and `Exit_Game` option in `KarmaHubState`.
+- What I changed manually: Updated one in-run karma label wording for clarity.
+- Result / test: Esc pause flow works in-run; controls are visible in-game; hub can exit cleanly.
+- Decision / scope note: Keep control guidance in-game so players do not need external docs.
+

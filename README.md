@@ -16,6 +16,7 @@ Playable jam prototype: hub → run → corridor memory pickups → combat rooms
 - **Interact (special circles / power-ups)**: E
 - **Shoot red orb (costs RedAmmo)**: Left Click
 - **Activate gold ring (costs GoldAmmo)**: Q
+- **Pause menu (in run)**: Esc
 - **Fullscreen**: F11
 - **Maximize**: F10
 
@@ -27,6 +28,9 @@ Playable jam prototype: hub → run → corridor memory pickups → combat rooms
   - **Red circle**: press **E** to spend **3 Bad(run) karma** → gain **+2 RedAmmo**
   - Circles **do not disappear** after use.
 - **Ammo UI**: RedAmmo/GoldAmmo are shown on the in-run HUD and reset on death.
+- **Pause menu**: Esc opens Resume / Settings / Return to Hub.
+- **Settings -> Controls**: dedicated controls reference screen.
+- **Hub menu**: includes an **Exit_Game** option.
 
 ## AI usage (will be expanded)
 - Code: Cursor (AI-assisted IDE)
